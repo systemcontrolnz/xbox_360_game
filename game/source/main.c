@@ -1,13 +1,16 @@
 #include "render.h"
 #include "input.h"
+#include "dungeon.h"
 
 int main(void) {
     render_init();
     input_init();
+    dungeon_init();
 
     int x = 5, y = 5;
 
     render_clear();
+    dungeon_render();
     render_draw_tile(x, y, '@', 255, 255, 0, 0, 0, 0);
 
     while (1) {
@@ -22,6 +25,7 @@ int main(void) {
 
         if (moved) {
             render_clear();
+            dungeon_render();
             render_draw_tile(x, y, '@', 255, 255, 0, 0, 0, 0);
         }
     }
