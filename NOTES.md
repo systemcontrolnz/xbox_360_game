@@ -137,6 +137,59 @@ later.
   (analog triggers, `unsigned char`), `logo` (guide button). Only
   `up/down/left/right/a/b` used so far — sticks/triggers unused until a
   feature needs them.
+ 
+  ## Double Buffering — Validated on Hardware (side-quest, not part of
+   Milestone 3's main sequence, but blocks the flicker fix)
+
+Investigated after noticing render flicker (clear + full redraw every frame
+with no back buffer). Confirmed true double buffering IS possible and have
+now validated the mechanism end-to-end on real hardware, via a standalone
+`dblbuf_test/` folder (sibling to `game/`, same Makefile template).
+
+**Key technical findings:**
+- Xenos GPU MMIO base is `0xec800000`. `xenos_write32(reg, val)` (exported
+  by libxenon's own xenos.c, not declared in the public xenos.h — needs its
+  own `extern` prototype) writes to `0xec800000 + reg`.
+- Two different address forms for the same physical RAM:
+  - CPU-usable pointer: `physical_addr | 0x80000000`
+  - GPU-register-usable address: `cpu_ptr & ~0x80000000` (mask off bit 31)
+  - Confirmed empirically: a plain `malloc()`/`memalign()` pointer already
+    carries the `0x80` high byte, so heap memory works directly for both
+    forms — no special physical-memory allocator needed.
+- Register `D1GRPH_PRIMARY_SURFACE_ADDRESS` controls which buffer the GPU is
+  actively scanning to the display. Flip pattern (confirmed working):
+
+xenos_write32(D1GRPH_UPDATE, 1);
+xenos_write32(D1GRPH_PRIMARY_SURFACE_ADDRESS, new_buffer_phys_addr);
+xenos_write32(D1GRPH_UPDATE, 0);
+
+This is the same lock/write/commit pattern libxenon's own `xenos_init()`
+  uses internally — not a novel technique, just reused.
+
+**Test results (dblbuf_test/):**
+- Step 1: copied current screen content byte-for-byte into a second buffer,
+  flipped to it, flipped back — confirmed non-destructive, no hang/corruption.
+- Step 2: filled an entire second buffer with one solid color, flipped —
+  screen went cleanly, uniformly solid-color full-screen, then flipped back
+  correctly to the original text (including a printf issued *while the
+  backbuffer was on-screen*, proving the two buffers are genuinely
+  independent CPU-writable memory regions regardless of which one the GPU
+  is scanning). No corruption, no partial fill, no hang across two full
+  test runs on real hardware.
+- Note: the "~3 seconds" delay text in dblbuf_test is an uncalibrated
+  busy-wait loop, not a real timer — actual observed delay was ~5s/~15s
+  (loop counts were in a consistent 1:3 ratio, delays scaled ~1:3 too, so
+  the delay behaves predictably, just isn't calibrated to real seconds).
+
+**Open question before this can be wired into `render.c` for real:**
+Xenos framebuffers may use a tiled/swizzled memory layout for arbitrary
+pixel positions (unconfirmed either way yet) — our solid-fill test dodged
+this entirely since a uniform fill looks correct regardless of tiling.
+Writing individual glyphs/tiles into an off-screen buffer will need to
+either reuse whatever addressing logic `console.c`'s pixel-plotting
+function already uses internally, or reimplement it for our own buffer.
+This is the next research step before double buffering can replace the
+current single-buffer `render.c`.
 
 ## Prerequisites (not part of this repo)
 
