@@ -116,6 +116,12 @@ later.
   Recommended starting point when resuming: **step 1, the static test
   map in `dungeon.c/h`.**
 
+**Side-quest — double buffering: RESEARCH COMPLETE, implementation next.**
+See "Double Buffering — Validated on Hardware" section above. Next session
+will replace render.c's single-buffer approach with real double buffering
+using the confirmed technique. Milestone 3 sub-steps (collision, entities,
+etc.) remain paused until this lands, since it changes render.c's internals.
+
 ## Known Gotchas (accumulated)
 
 - `xenos_init(VIDEO_MODE_AUTO)` must be called before `console_init()` —
@@ -190,6 +196,33 @@ either reuse whatever addressing logic `console.c`'s pixel-plotting
 function already uses internally, or reimplement it for our own buffer.
 This is the next research step before double buffering can replace the
 current single-buffer `render.c`.
+
+**Tiling formula — CONFIRMED, generalizes to arbitrary buffers (Step 3):**
+Xenos framebuffers use a macro-tiled memory layout, not row-major linear.
+Reverse-derived from console.c's static console_pset32, then generalized to
+take an explicit buffer pointer + width (works on ANY buffer, not just the
+hardcoded console_fb):
+
+```c
+static inline void buf_pset32(unsigned int *buf, unsigned int width, int x, int y, unsigned int color) {
+    unsigned int base = (((y >> 5) * 32 * width + ((x >> 5) << 10)
+        + (x & 3) + ((y & 1) << 2) + (((x & 31) >> 2) << 3) + (((y & 31) >> 1) << 6))
+        ^ ((y & 8) << 2));
+    buf[base] = color;
+}
+```
+
+Validated on real hardware: drew a dark blue background + a red rectangle
+at a known position (x=100-300, y=100-200) into a manually-managed backbuffer,
+flipped to it. Rectangle appeared sharp-edged, correctly positioned, no
+scrambling/smearing/mis-tiled blocks. This confirms the formula is correct
+and buffer-agnostic — safe to reuse for real double buffering in render.c.
+
+**Double buffering is now fully validated end-to-end and ready to implement
+for real in render.c/render.h.** All pieces confirmed on hardware: MMIO
+register writes, CPU/GPU address translation, the flip mechanism itself,
+and correct tiled pixel addressing on an arbitrary buffer. No remaining
+unknowns before this becomes the actual rendering approach.
 
 ## Prerequisites (not part of this repo)
 
