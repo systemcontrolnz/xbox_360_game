@@ -54,6 +54,11 @@ goal, not just a stretch idea.
 - Use git properly: commit after each reasonably working revision, short
   descriptive messages.
 - Keep this NOTES.md current as work progresses.
+- When researching a new libxenon subsystem (as done for render.c and
+  input.c), confirm actual header location, function signatures, and
+  struct fields directly from the local `libxenon/` clone via `grep`
+  BEFORE writing implementation code — don't trust old wiki examples at
+  face value, they can be outdated (see kmem_init gotcha below).
 
 ## Portability Goal (Windows)
 
@@ -72,12 +77,66 @@ later.
   real crash (missing `xenos_init()` call — see ENVIRONMENT_SETUP.md),
   confirmed text rendering live on real hardware via XeLL. Git/GitHub
   set up and working (`systemcontrolnz/xbox_360_game`).
-- **Milestone 2 — Input + basic render loop (next up):** Read controller
-  input; render a simple character grid to screen. Establish the basic
-  game loop shape: read input -> update state -> draw.
-- **Milestone 3 — The actual roguelike:** Dungeon generation, turn-based
-  movement, inventory, monsters with simple AI, XP/leveling, etc. Deepen
-  indefinitely over time per design decisions above.
+
+- **Milestone 2 — Input + basic render loop: COMPLETE.**
+  Split into `render.c/h` and `input.c/h`, both confined to libxenon
+  calls per the platform-abstraction rule; `main.c` now has zero
+  libxenon includes. `render_draw_tile(x, y, glyph, fg, bg)` wraps
+  libxenon's console API (cursor positioning + BGRA color packing).
+  `input_poll()` reads the controller edge-triggered (press, not
+  held-repeat) via `get_controller_data()`, matching turn-based movement.
+  Confirmed on real hardware: colored glyphs render correctly, and the
+  d-pad moves a single `@` around the grid one tile per press with no
+  repeat-while-held or diagonal drift.
+
+- **Milestone 3 — The actual roguelike (next up).** Broken into ordered
+  sub-steps rather than tackled all at once, per one-feature-per-turn
+  workflow:
+  1. **`dungeon.c/h` — static test map.** Define a tile-type grid (floor,
+     wall) and a fixed hand-authored test layout (not procedural yet).
+     Render it via `render_draw_tile()` — walls and floor as distinct
+     glyphs/colors. No player interaction yet, just confirm a multi-tile
+     map draws correctly on hardware.
+  2. **Collision.** Wire player movement (currently free-roaming from
+     Milestone 2) to check the dungeon grid before moving — walking into
+     a wall tile should be blocked. This is the first point `main.c`'s
+     loop needs to know about both `dungeon.c` and `input.c` together.
+  3. **`entities.c/h`.** Formalize player state (currently just loose
+     `x`/`y` ints in `main.c`) into a proper struct — position, HP, and
+     room for stats to be added later (XP, level). Monsters will reuse
+     this same struct shape.
+  4. **Procedural generation.** Replace the static test map with actual
+     room/corridor dungeon generation. Deliberately last in this list —
+     easiest to validate generation logic once rendering+collision
+     already work against a known-good static map.
+  5. **Monsters + simple AI, combat resolution, XP/leveling.** Deepen
+     indefinitely per the design decisions above, once the floor itself
+     is solid.
+
+  Recommended starting point when resuming: **step 1, the static test
+  map in `dungeon.c/h`.**
+
+## Known Gotchas (accumulated)
+
+- `xenos_init(VIDEO_MODE_AUTO)` must be called before `console_init()` —
+  wrong order causes black-screen reboot or segfault soft-lock. Handled
+  internally by `render_init()`.
+- libxenon's console color format is BGRA-packed, not RGB:
+  `(b<<24) | (g<<16) | (r<<8)`, alpha byte unused. Handled internally by
+  `render.c`'s `pack_bgra()` helper — nothing outside render.c needs to
+  know this.
+- `usb_init()` (declared in `usb/usbmain.h`) already calls `kmem_init()`
+  internally. Calling `kmem_init()` manually beforehand is deprecated —
+  libxenon's own source prints a warning if you do. Don't call it from
+  `input.c`.
+- Docker builds create files owned by `root`. Run
+  `sudo chown -R $USER:$USER ~/xbox_360_game/game` after every build.
+- `struct controller_data_s` (in `libxenon/libxenon/drivers/input/input.h`)
+  fields: `s1_x, s1_y, s2_x, s2_y` (stick axes), `s1_z, s2_z, lb, rb,
+  start, back, a, b, x, y, up, down, left, right` (all `int`), `lt, rt`
+  (analog triggers, `unsigned char`), `logo` (guide button). Only
+  `up/down/left/right/a/b` used so far — sticks/triggers unused until a
+  feature needs them.
 
 ## Prerequisites (not part of this repo)
 
@@ -95,3 +154,5 @@ later.
 - Whether to eventually build the toolchain natively on Ubuntu (faster
   edit/compile loop, no Docker overhead) instead of the current
   Docker-based approach. Not a blocker — current setup works fine.
+- Tile-type representation for dungeon.c (e.g. plain enum vs a struct
+  per tile) — to be decided when starting Milestone 3 step 1.
