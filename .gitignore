@@ -1,6 +1,7 @@
 *.o
 *.elf
 *.xex
+*.elf32
 build/
 libxenon/
 stuff/
