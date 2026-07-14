@@ -125,15 +125,23 @@ later.
      procedural yet). Renders via `render_draw_tile()` — walls and floor
      as distinct glyphs/colors. Confirmed multi-tile map draws correctly
      on hardware.
-  2. **Collision (next up).** Wire player movement (currently free-
-     roaming from Milestone 2) to check the dungeon grid before moving —
-     walking into a wall tile should be blocked. This is the first point
-     `main.c`'s loop needs to know about both `dungeon.c` and `input.c`
-     together.
-  3. **`entities.c/h`.** Formalize player state (currently just loose
-     `x`/`y` ints in `main.c`) into a proper struct — position, HP, and
-     room for stats to be added later (XP, level). Monsters will reuse
-     this same struct shape.
+2. **Collision: COMPLETE.** Player movement in `main.c` now computes a
+     candidate `(nx, ny)` before committing, and checks
+     `dungeon_get_tile(nx, ny) != TILE_WALL` before applying the move.
+     Diagonal moves are checked against their single true destination
+     tile (not resolved per-axis) — a diagonal into a solid tile is
+     blocked outright, no corner-cutting/sliding. Reuses
+     `dungeon_get_tile()`'s existing out-of-bounds-returns-TILE_WALL
+     behavior for free map-edge clamping, no separate bounds check
+     needed. Confirmed on real hardware: walls form an impassable
+     border, player cannot walk through it in any direction including
+     diagonally into a border corner. `render.c/h`, `dungeon.c/h`,
+     `input.c/h` required zero changes — platform-abstraction boundary
+     held again.
+  3. **`entities.c/h` (next up).** Formalize player state (currently
+     just loose `x`/`y` ints in `main.c`) into a proper struct —
+     position, HP, and room for stats to be added later (XP, level).
+     Monsters will reuse this same struct shape.
   4. **Procedural generation.** Replace the static test map with actual
      room/corridor dungeon generation. Deliberately last in this list —
      easiest to validate generation logic once rendering+collision
