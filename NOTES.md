@@ -14,10 +14,13 @@ goal, not just a stretch idea.
 ## Design (locked in)
 
 1. **Visuals:** Colored ASCII/glyph grid (NetHack/Rogue/Dwarf Fortress
-   style), NOT hand-drawn sprite tiles. Sprite art needs actual artwork
-   we can't produce; colored characters on a monospace grid can be built
-   entirely in code with zero art assets. Real tile art is a possible
-   future upgrade, but that's an ART problem, not a code problem.
+   style), NOT hand-drawn sprite tiles, as the current baseline. Colored
+   characters on a monospace grid can be built entirely in code with zero
+   art assets. Sprite rendering is now a planned upgrade, not just a
+   maybe — see "Sprite Rendering — Planned Upgrade" section below for
+   scope assessment. Static sprite images (flip-through frames per
+   NPC/character, plus dungeon background images) are the intended art
+   style once pursued; not photorealistic or complex animation.
 2. **Core loop:** NetHack's rendering/turn structure, with Vampire
    Survivors' power-fantasy escalation feel instead of slow exploration.
    - Turn-based movement (world only advances when player moves)
@@ -36,6 +39,26 @@ goal, not just a stretch idea.
    with lock-and-key style ability/item gates. Full SotN-level visual
    presentation is not realistic (art/content problem) — the connected-
    map structure is the realistic part worth borrowing.
+6. **Run seeding + randomized objectives (idea, not yet designed in
+   detail):** Each run's procedural dungeon (Milestone 3 step 4) is
+   generated from a seed — either random per run, or manually entered to
+   reproduce a specific playthrough. Each run also picks one or more
+   objectives at random from a predefined list (exact objective types TBD
+   — candidates: reach the exit, kill N enemies, survive N floors,
+   collect a specific item). This is a refinement of the existing
+   escalating-difficulty design (see point 2 above), not a new
+   direction — still 2D, turn-based, permadeath, same core loop. Natural
+   fit after Milestone 3 step 5 (monsters/combat), since most plausible
+   objectives depend on enemies existing first.
+7. **Menu system (idea, not yet designed in detail):** Main menu, pause
+   menu, and potentially a settings menu are anticipated as the game
+   grows. Not expected to be a major technical hurdle — same
+   `render_draw_tile()` / `input_poll()` primitives as gameplay, just a
+   different screen state. The one real open question (console
+   reboot/shutdown capability) is now resolved — see "System Power
+   Control — SMC Findings" below. A pause menu's "Quit" option will
+   trigger a console reboot (see that section for why this is an
+   acceptable substitute for "return to Aurora").
 
 ## Code Workflow Rules (agreed, important)
 
@@ -58,7 +81,12 @@ goal, not just a stretch idea.
   input.c), confirm actual header location, function signatures, and
   struct fields directly from the local `libxenon/` clone via `grep`
   BEFORE writing implementation code — don't trust old wiki examples at
-  face value, they can be outdated (see kmem_init gotcha below).
+  face value, they can be outdated (see kmem_init gotcha below). Caveat
+  learned this session: don't trust filenames alone either —
+  `xenon_soc/xenon_power.c` sounds like it should hold shutdown/reboot
+  logic but is actually all CPU clock-speed/threading code. The real
+  power-control functions turned out to live in `xenon_smc/`. Grep
+  contents, not just filenames, when a first guess doesn't pan out.
 
 ## Portability Goal (Windows)
 
@@ -109,12 +137,13 @@ later.
   4. **Procedural generation.** Replace the static test map with actual
      room/corridor dungeon generation. Deliberately last in this list —
      easiest to validate generation logic once rendering+collision
-     already work against a known-good static map.
+     already work against a known-good static map. Will incorporate the
+     seed + randomized objectives idea from Design point 6 above.
   5. **Monsters + simple AI, combat resolution, XP/leveling.** Deepen
      indefinitely per the design decisions above, once the floor itself
      is solid.
 
-  Recommended starting point when resuming: **step 2, collision.**
+  Recommended starting point when resuming: step 2, collision.
 
 - **Side-quest — double buffering: COMPLETE, validated on real
   hardware.** `render.c`/`render.h` rewritten for true double buffering
@@ -134,6 +163,21 @@ later.
   turned out to be an improvement, not a regression).
 
   Milestone 3 sub-steps (collision, entities, etc.) are now unblocked.
+
+- **Side-quest — sprite rendering: PLANNED, not yet started.** See
+  "Sprite Rendering — Planned Upgrade" section below for full scope
+  assessment. Comparable in size to the double-buffering work — the
+  hardest infrastructure (backbuffer, flip mechanism, pixel-level
+  blitting) already exists and sprites reuse it directly. Can be pursued
+  as its own side-quest alongside or after Milestone 3, not a blocker to
+  either.
+
+- **Side-quest — menu system: PLANNED, not yet started.** Main menu,
+  pause menu, possibly settings menu. Not expected to need new rendering
+  or input primitives beyond what already exists — just new screen
+  states in `main.c`'s loop. Pause menu's "Quit" action will call
+  `xenon_smc_power_reboot()` — see "System Power Control — SMC Findings"
+  below.
 
 ## Known Gotchas (accumulated)
 
@@ -198,8 +242,8 @@ xenos_write32(D1GRPH_UPDATE, 0);
   flipped to it, flipped back — confirmed non-destructive, no hang/corruption.
 - Step 2: filled an entire second buffer with one solid color, flipped —
   screen went cleanly, uniformly solid-color full-screen, then flipped back
-  correctly to the original text (including a printf issued *while the
-  backbuffer was on-screen*, proving the two buffers are genuinely
+  correctly to the original text (including a printf issued while the
+  backbuffer was on-screen, proving the two buffers are genuinely
   independent CPU-writable memory regions regardless of which one the GPU
   is scanning). No corruption, no partial fill, no hang across two full
   test runs on real hardware.
@@ -257,6 +301,90 @@ a frame or get overwritten depending on which buffer is currently
 on-screen vs. being drawn to. Not a problem for game rendering (which
 bypasses `console_putch()` entirely), only cosmetic for debug text.
 
+## Sprite Rendering — Planned Upgrade
+
+Idea: move from ASCII/glyph rendering to actual 2D sprite images (static
+flip-through frames per NPC/character, plus dungeon background images).
+Scope assessed before committing — summary below, not yet started.
+
+**Why this is a moderate addition, not a rewrite:**
+- The platform-abstraction boundary already isolates this entirely
+  inside `render.c`. `dungeon.c` and `main.c` only ever call
+  `render_draw_tile()` — they have no awareness that glyphs are
+  currently ASCII. Swapping the underlying blit target requires zero
+  changes to game logic.
+- The hard infrastructure problem is already solved: backbuffer,
+  tiled-pixel addressing (`buf_pset32`), and the flip mechanism are all
+  validated on hardware (see Double Buffering section above). A sprite
+  blitter is structurally the same operation as `buf_draw_glyph()` — loop
+  over width x height, write pixel color into the backbuffer — just
+  reading from image data instead of `fontdata_8x16`.
+
+**What's genuinely new work:**
+1. Getting image data usable by PowerPC code at all. libxenon has no
+   image decoder in the toolchain (no libpng/stb_image by default).
+   Planned approach: convert art to raw pixel arrays offline (a small
+   script on the dev machine), then bake into a `.h` as a `const` array
+   (same pattern as `fontdata_8x16`) or load a raw binary blob at
+   runtime. One-time tooling problem, not recurring.
+2. Sprite sizing vs. the fixed 8x16 glyph grid. Sprites will likely span
+   multiple grid cells. Needs a decision: keep tile-grid-based
+   positioning with sprites spanning multiple cells, or move to free
+   pixel positioning for sprite layers. Not yet decided.
+3. Transparency/alpha. Glyphs are opaque (bg + fg color fill). Sprites
+   will want transparent backgrounds — requires checking an alpha byte
+   per pixel during blit and skipping the write. Not yet implemented.
+4. Memory is not expected to be a real constraint at this project's
+   scale.
+
+**Verdict:** comparable in size to the double-buffering side-quest,
+likely smaller since the hardest part (backbuffer + flip) is already
+built. Main new skill is offline art-to-data conversion tooling, not
+ongoing rendering complexity. Does not touch the platform-abstraction
+boundary — confined to `render.c`.
+
+## System Power Control — SMC Findings
+
+Question investigated: can a running libxenon app (launched via
+BadAvatar -> Aurora -> XeLL -> `xenon.elf`) return to Aurora, or at
+least hard-reboot the console? Relevant for a pause/main menu "Quit"
+option.
+
+**Findings:**
+- Returning to Aurora directly: NOT possible. By the time an app is
+  running via XeLL, Aurora is not resident/reachable — there's no
+  documented path back to it short of a fresh boot cycle re-triggering
+  BadAvatar.
+- Hard reboot: POSSIBLE, confirmed via source inspection.
+  `xenon_smc_power_reboot(void)`, declared and implemented in
+  `libxenon/libxenon/drivers/xenon_smc/xenon_smc.c` (declared line 69,
+  implemented ~line 274). Sends a simple SMC command message:
+  `uint8_t buf[16] = {0x82, 0x04, 0x30, 0x00};` via
+  `xenon_smc_send_message(buf)`. `0x82` is the power-command opcode,
+  sub-code `0x04` selects reboot.
+- Shutdown also available: `xenon_smc_power_shutdown(void)`, same file
+  (declared line 68, implemented ~line 268). Sends
+  `uint8_t buf[16] = {0x82, 0x01};` — same opcode, sub-code `0x01` for
+  shutdown.
+- No special preconditions found. Both functions are simple,
+  self-contained SMC message sends — no evidence of required setup
+  beyond normal boot state. Since a reboot ends CPU execution entirely,
+  no backbuffer flush or cleanup is needed beforehand.
+- Practical implication for menu design: since a reboot cycles back
+  through the console's normal boot chain (BadAvatar -> Aurora), calling
+  `xenon_smc_power_reboot()` from a "Quit" menu option lands the player
+  back at Aurora's dashboard — functionally equivalent to "quit to
+  dashboard" even though there's no direct return path. Decision: pause
+  menu's Quit action will call `xenon_smc_power_reboot()`. This should
+  be confirmed on real hardware when the menu is actually built (verify
+  it does land back at Aurora as expected, not e.g. straight back into
+  XeLL or a different state).
+- Note on research process: initial grep guess (`xenon_soc/
+  xenon_power.c`, based on filename) was a red herring — that file is
+  entirely CPU clock-speed/threading logic, nothing about power state.
+  The real functions were in `xenon_smc/xenon_smc.c` instead. See Code
+  Workflow Rules above for the generalized lesson.
+
 ## Prerequisites (not part of this repo)
 
 - Console must have a working XeLL-Reloaded setup for its specific
@@ -276,4 +404,13 @@ bypasses `console_putch()` entirely), only cosmetic for debug text.
 - Tile-type representation for dungeon.c (e.g. plain enum vs a struct
   per tile) — to be decided when starting Milestone 3 step 1.
 - Debug printf lag/overwrite issue from buffer-swapping not tracked by
-  console_fb (see "Known rough edge" above) — cosmetic, not urgent.
+  console_fb (see "Known rough edge" under Double Buffering above) —
+  cosmetic, not urgent.
+- Sprite positioning model (tile-grid-based multi-cell sprites vs. free
+  pixel positioning) — to be decided when sprite rendering side-quest is
+  picked up.
+- Exact objective types for the randomized-objectives idea (Design point
+  6) — to be decided alongside Milestone 3 step 4/5.
+- Whether a settings menu is actually needed for V1, or if main menu +
+  pause menu (with Quit -> reboot) covers it — to be decided when the
+  menu side-quest is picked up.
