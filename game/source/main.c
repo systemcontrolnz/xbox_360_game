@@ -12,6 +12,7 @@ int main(void) {
     render_clear();
     dungeon_render();
     render_draw_tile(x, y, '@', 255, 255, 0, 0, 0, 0);
+    render_present();
 
     while (1) {
         input_state_t in;
@@ -27,6 +28,7 @@ int main(void) {
             render_clear();
             dungeon_render();
             render_draw_tile(x, y, '@', 255, 255, 0, 0, 0, 0);
+            render_present();
         }
     }
 

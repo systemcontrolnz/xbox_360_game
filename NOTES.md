@@ -89,18 +89,19 @@ later.
   d-pad moves a single `@` around the grid one tile per press with no
   repeat-while-held or diagonal drift.
 
-- **Milestone 3 — The actual roguelike (next up).** Broken into ordered
-  sub-steps rather than tackled all at once, per one-feature-per-turn
-  workflow:
-  1. **`dungeon.c/h` — static test map.** Define a tile-type grid (floor,
-     wall) and a fixed hand-authored test layout (not procedural yet).
-     Render it via `render_draw_tile()` — walls and floor as distinct
-     glyphs/colors. No player interaction yet, just confirm a multi-tile
-     map draws correctly on hardware.
-  2. **Collision.** Wire player movement (currently free-roaming from
-     Milestone 2) to check the dungeon grid before moving — walking into
-     a wall tile should be blocked. This is the first point `main.c`'s
-     loop needs to know about both `dungeon.c` and `input.c` together.
+- **Milestone 3 — The actual roguelike (in progress).** Broken into
+  ordered sub-steps rather than tackled all at once, per one-feature-per-
+  turn workflow:
+  1. **`dungeon.c/h` — static test map: COMPLETE.** Tile-type grid
+     (floor, wall) with a fixed hand-authored test layout (not
+     procedural yet). Renders via `render_draw_tile()` — walls and floor
+     as distinct glyphs/colors. Confirmed multi-tile map draws correctly
+     on hardware.
+  2. **Collision (next up).** Wire player movement (currently free-
+     roaming from Milestone 2) to check the dungeon grid before moving —
+     walking into a wall tile should be blocked. This is the first point
+     `main.c`'s loop needs to know about both `dungeon.c` and `input.c`
+     together.
   3. **`entities.c/h`.** Formalize player state (currently just loose
      `x`/`y` ints in `main.c`) into a proper struct — position, HP, and
      room for stats to be added later (XP, level). Monsters will reuse
@@ -113,14 +114,26 @@ later.
      indefinitely per the design decisions above, once the floor itself
      is solid.
 
-  Recommended starting point when resuming: **step 1, the static test
-  map in `dungeon.c/h`.**
+  Recommended starting point when resuming: **step 2, collision.**
 
-**Side-quest — double buffering: RESEARCH COMPLETE, implementation next.**
-See "Double Buffering — Validated on Hardware" section above. Next session
-will replace render.c's single-buffer approach with real double buffering
-using the confirmed technique. Milestone 3 sub-steps (collision, entities,
-etc.) remain paused until this lands, since it changes render.c's internals.
+- **Side-quest — double buffering: COMPLETE, validated on real
+  hardware.** `render.c`/`render.h` rewritten for true double buffering
+  (see "Double Buffering — Validated on Hardware" section below for the
+  full technical findings this was built on). Public interface unchanged
+  except one addition: `render_present()` must now be called once per
+  frame, after all `render_draw_tile()` calls, to flip the completed
+  backbuffer to the display. `main.c` updated accordingly. `dungeon.c/h`
+  and `input.c/h` required zero changes — platform-abstraction boundary
+  held.
+
+  Confirmed on real hardware: static dungeon map renders correctly via
+  the new backbuffer + glyph blitter, flicker is gone, and the character
+  grid is now perfectly aligned to the screen's top-left corner
+  (previously console.c's internal centering offset shifted it slightly
+  — our version draws at raw cursor*8/cursor*16 with no offset, which
+  turned out to be an improvement, not a regression).
+
+  Milestone 3 sub-steps (collision, entities, etc.) are now unblocked.
 
 ## Known Gotchas (accumulated)
 
@@ -143,14 +156,20 @@ etc.) remain paused until this lands, since it changes render.c's internals.
   (analog triggers, `unsigned char`), `logo` (guide button). Only
   `up/down/left/right/a/b` used so far — sticks/triggers unused until a
   feature needs them.
- 
-  ## Double Buffering — Validated on Hardware (side-quest, not part of
-   Milestone 3's main sequence, but blocks the flicker fix)
+- Docker builds must be launched from `~/xbox_360_game` (project root),
+  NOT from inside `libxenon/` — running `docker run -v $PWD:/app` from
+  the wrong directory mounts the wrong folder as `/app` and none of the
+  project folders (`game/`, `hello/`, etc.) will be visible inside the
+  container.
 
-Investigated after noticing render flicker (clear + full redraw every frame
-with no back buffer). Confirmed true double buffering IS possible and have
-now validated the mechanism end-to-end on real hardware, via a standalone
-`dblbuf_test/` folder (sibling to `game/`, same Makefile template).
+## Double Buffering — Validated on Hardware
+
+Investigated after noticing render flicker (clear + full redraw every
+frame with no back buffer). Confirmed true double buffering IS possible
+and validated the mechanism end-to-end on real hardware, first via a
+standalone `dblbuf_test/` folder (sibling to `game/`, same Makefile
+template), then implemented for real in `render.c`/`render.h`. Now
+COMPLETE and live in the game itself — see Milestone Plan above.
 
 **Key technical findings:**
 - Xenos GPU MMIO base is `0xec800000`. `xenos_write32(reg, val)` (exported
@@ -165,14 +184,16 @@ now validated the mechanism end-to-end on real hardware, via a standalone
 - Register `D1GRPH_PRIMARY_SURFACE_ADDRESS` controls which buffer the GPU is
   actively scanning to the display. Flip pattern (confirmed working):
 
+```c
 xenos_write32(D1GRPH_UPDATE, 1);
 xenos_write32(D1GRPH_PRIMARY_SURFACE_ADDRESS, new_buffer_phys_addr);
 xenos_write32(D1GRPH_UPDATE, 0);
+```
 
-This is the same lock/write/commit pattern libxenon's own `xenos_init()`
+  This is the same lock/write/commit pattern libxenon's own `xenos_init()`
   uses internally — not a novel technique, just reused.
 
-**Test results (dblbuf_test/):**
+**Prototype test results (`dblbuf_test/`):**
 - Step 1: copied current screen content byte-for-byte into a second buffer,
   flipped to it, flipped back — confirmed non-destructive, no hang/corruption.
 - Step 2: filled an entire second buffer with one solid color, flipped —
@@ -182,26 +203,22 @@ This is the same lock/write/commit pattern libxenon's own `xenos_init()`
   independent CPU-writable memory regions regardless of which one the GPU
   is scanning). No corruption, no partial fill, no hang across two full
   test runs on real hardware.
-- Note: the "~3 seconds" delay text in dblbuf_test is an uncalibrated
-  busy-wait loop, not a real timer — actual observed delay was ~5s/~15s
-  (loop counts were in a consistent 1:3 ratio, delays scaled ~1:3 too, so
-  the delay behaves predictably, just isn't calibrated to real seconds).
+  - Note: the "~3 seconds" delay text in dblbuf_test is an uncalibrated
+    busy-wait loop, not a real timer — actual observed delay was ~5s/~15s
+    (loop counts were in a consistent 1:3 ratio, delays scaled ~1:3 too, so
+    the delay behaves predictably, just isn't calibrated to real seconds).
+- Step 3: drew a dark blue background + a red rectangle at a known
+  position (x=100-300, y=100-200) into a manually-managed backbuffer,
+  flipped to it. Rectangle appeared sharp-edged, correctly positioned, no
+  scrambling/smearing/mis-tiled blocks — confirmed the tiling formula
+  below is correct and buffer-agnostic, dodging the risk that a uniform
+  fill (Step 2) would look correct even if tiling were wrong.
 
-**Open question before this can be wired into `render.c` for real:**
-Xenos framebuffers may use a tiled/swizzled memory layout for arbitrary
-pixel positions (unconfirmed either way yet) — our solid-fill test dodged
-this entirely since a uniform fill looks correct regardless of tiling.
-Writing individual glyphs/tiles into an off-screen buffer will need to
-either reuse whatever addressing logic `console.c`'s pixel-plotting
-function already uses internally, or reimplement it for our own buffer.
-This is the next research step before double buffering can replace the
-current single-buffer `render.c`.
-
-**Tiling formula — CONFIRMED, generalizes to arbitrary buffers (Step 3):**
+**Tiling formula — CONFIRMED, generalizes to arbitrary buffers:**
 Xenos framebuffers use a macro-tiled memory layout, not row-major linear.
-Reverse-derived from console.c's static console_pset32, then generalized to
-take an explicit buffer pointer + width (works on ANY buffer, not just the
-hardcoded console_fb):
+Reverse-derived from console.c's static `console_pset32`, then generalized
+to take an explicit buffer pointer + width (works on ANY buffer, not just
+the hardcoded `console_fb`):
 
 ```c
 static inline void buf_pset32(unsigned int *buf, unsigned int width, int x, int y, unsigned int color) {
@@ -212,17 +229,33 @@ static inline void buf_pset32(unsigned int *buf, unsigned int width, int x, int 
 }
 ```
 
-Validated on real hardware: drew a dark blue background + a red rectangle
-at a known position (x=100-300, y=100-200) into a manually-managed backbuffer,
-flipped to it. Rectangle appeared sharp-edged, correctly positioned, no
-scrambling/smearing/mis-tiled blocks. This confirms the formula is correct
-and buffer-agnostic — safe to reuse for real double buffering in render.c.
+**Glyph rendering internals — researched from libxenon console.c when
+implementing render.c for real (not part of the original dblbuf_test
+prototype, which only drew a solid rectangle, not text):**
+- Font data: `fontdata_8x16` (8x16 px/glyph, 1 byte/row, MSB-first),
+  defined via `font_8x16.h` in libxenon's console.c — GPL-licensed
+  (sourced from the Linux kernel). We do NOT `#include` that header:
+  it would vendor GPL source unnecessarily, and the array already has
+  external linkage from being compiled into libxenon.a (re-including
+  would cause a duplicate-symbol link error). Instead `render.c` declares
+  `extern const unsigned char fontdata_8x16[];` and lets the linker
+  resolve it against libxenon.a. Future: swapping in our own font data
+  is a drop-in replacement of that one declaration.
+- Glyph pixel lookup: `(fontdata_8x16[ch*16+y] >> (7-x)) & 1` selects
+  bit x of row y — reverse-derived from console.c's `console_draw_char()`.
+- console.c's `offset_x`/`offset_y` (static, not accessible outside
+  console.c) intentionally NOT replicated — our version positions glyphs
+  at raw `cursor*8`/`cursor*16`. Confirmed on hardware this actually
+  improved alignment (grid now sits flush with the screen's top-left
+  corner) rather than regressing it.
 
-**Double buffering is now fully validated end-to-end and ready to implement
-for real in render.c/render.h.** All pieces confirmed on hardware: MMIO
-register writes, CPU/GPU address translation, the flip mechanism itself,
-and correct tiled pixel addressing on an arbitrary buffer. No remaining
-unknowns before this becomes the actual rendering approach.
+**Known rough edge (not yet fixed):** `console_init()` is still called in
+`render_init()` (kept for printf debug output), but console.c's internal
+`console_fb` pointer doesn't track our buffer-swapping — it always targets
+the original primary address. This means debug `printf()` output may lag
+a frame or get overwritten depending on which buffer is currently
+on-screen vs. being drawn to. Not a problem for game rendering (which
+bypasses `console_putch()` entirely), only cosmetic for debug text.
 
 ## Prerequisites (not part of this repo)
 
@@ -242,3 +275,5 @@ unknowns before this becomes the actual rendering approach.
   Docker-based approach. Not a blocker — current setup works fine.
 - Tile-type representation for dungeon.c (e.g. plain enum vs a struct
   per tile) — to be decided when starting Milestone 3 step 1.
+- Debug printf lag/overwrite issue from buffer-swapping not tracked by
+  console_fb (see "Known rough edge" above) — cosmetic, not urgent.
