@@ -138,10 +138,19 @@ later.
      diagonally into a border corner. `render.c/h`, `dungeon.c/h`,
      `input.c/h` required zero changes — platform-abstraction boundary
      held again.
-  3. **`entities.c/h` (next up).** Formalize player state (currently
-     just loose `x`/`y` ints in `main.c`) into a proper struct —
-     position, HP, and room for stats to be added later (XP, level).
-     Monsters will reuse this same struct shape.
+  3. **`entities.c/h`: COMPLETE.** Player state formalized into an
+     `entity_t` struct (`x`, `y`, `hp`, `max_hp`) via `entity_init()`,
+     replacing the loose `x`/`y` ints previously in `main.c`. Pure data +
+     logic, no libxenon calls — same platform-abstraction boundary as
+     `dungeon.c`. Starting HP (10) is a placeholder, not a tuned value —
+     nothing reads/displays HP yet, so there's no visible change at this
+     step; this was a refactor to prepare for step 5 (combat), not a
+     feature on its own. Confirmed on real hardware: compiles clean,
+     movement and collision behavior unchanged (byte-for-byte the same
+     logic, now reading `player.x`/`player.y` instead of loose ints).
+     Monsters (step 5) will reuse this same struct shape. Makefile
+     required no changes — `source/*.c` is wildcarded automatically, so
+     new source files just need to be dropped into `game/source/`.
   4. **Procedural generation.** Replace the static test map with actual
      room/corridor dungeon generation. Deliberately last in this list —
      easiest to validate generation logic once rendering+collision
@@ -151,7 +160,7 @@ later.
      indefinitely per the design decisions above, once the floor itself
      is solid.
 
-  Recommended starting point when resuming: step 2, collision.
+  Recommended starting point when resuming: step 4, procedural generation.
 
 - **Side-quest — double buffering: COMPLETE, validated on real
   hardware.** `render.c`/`render.h` rewritten for true double buffering
