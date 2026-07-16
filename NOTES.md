@@ -58,7 +58,10 @@ goal, not just a stretch idea.
    reboot/shutdown capability) is now resolved — see "System Power
    Control — SMC Findings" below. A pause menu's "Quit" option will
    trigger a console reboot (see that section for why this is an
-   acceptable substitute for "return to Aurora").
+   acceptable substitute for "return to Aurora"). Seed entry (random vs.
+   manually typed, per Design point 6) is expected to live here too —
+   `dungeon_init(seed)`'s signature already supports this with zero
+   changes needed to `dungeon.c` itself; see Milestone 3 step 4 below.
 
 ## Code Workflow Rules (agreed, important)
 
@@ -125,7 +128,7 @@ later.
      procedural yet). Renders via `render_draw_tile()` — walls and floor
      as distinct glyphs/colors. Confirmed multi-tile map draws correctly
      on hardware.
-2. **Collision: COMPLETE.** Player movement in `main.c` now computes a
+  2. **Collision: COMPLETE.** Player movement in `main.c` now computes a
      candidate `(nx, ny)` before committing, and checks
      `dungeon_get_tile(nx, ny) != TILE_WALL` before applying the move.
      Diagonal moves are checked against their single true destination
@@ -151,16 +154,42 @@ later.
      Monsters (step 5) will reuse this same struct shape. Makefile
      required no changes — `source/*.c` is wildcarded automatically, so
      new source files just need to be dropped into `game/source/`.
-  4. **Procedural generation.** Replace the static test map with actual
-     room/corridor dungeon generation. Deliberately last in this list —
-     easiest to validate generation logic once rendering+collision
-     already work against a known-good static map. Will incorporate the
-     seed + randomized objectives idea from Design point 6 above.
+  4. **Procedural generation: COMPLETE.** Random room placement +
+     L-shaped corridor generation, validated standalone in
+     `dungen_test/` (printf-based ASCII output, no glyph rendering
+     needed to check placement logic) before porting into `dungeon.c/h`
+     for real. `dungeon_init()` now takes a `seed` parameter
+     (`srand(seed)` — confirmed available via newlib's `stdlib.h` at
+     `/usr/local/xenon/xenon/include/stdlib.h` in the toolchain image;
+     no local copy exists in the `libxenon/` repo clone itself, worth
+     remembering next time a similar libc question comes up). Seed is
+     currently a fixed placeholder passed from `main.c` — manual/random
+     seed entry is a future main-menu concern (see Design point 6 and
+     Milestone 3 step 7 above), not something `dungeon.c` itself
+     handles; the function signature already supports this with zero
+     future changes needed. Room overlap rejection uses a padding margin
+     so rooms never touch edge-to-edge. Confirmed on real hardware: 8/8
+     rooms placed, corridors visibly connect them, no overlap/corruption
+     in the generated grid.
+
+     Also added as part of this step: `dungeon_get_start()` /
+     `dungeon_get_end()` (room-center anchor points, first/last room
+     placed) and `dungeon_get_points_of_interest()` (centers of all
+     other rooms, capacity-limited output array). These expose *where*
+     notable points are — start position, level exit, and candidate
+     spots for future objectives (collectibles, bosses, optional
+     objectives per Design point 6) — without `dungeon.c` needing any
+     awareness of what those points represent; that assignment is step
+     5's job once monsters/objectives actually exist. `main.c` now reads
+     `dungeon_get_start()` instead of a hardcoded spawn tile, since a
+     procedural map won't reliably have floor at a fixed coordinate.
   5. **Monsters + simple AI, combat resolution, XP/leveling.** Deepen
      indefinitely per the design decisions above, once the floor itself
      is solid.
 
-  Recommended starting point when resuming: step 4, procedural generation.
+  Recommended starting point when resuming: held-repeat d-pad input +
+  left analog stick support (see "Movement Granularity & Square Tiles"
+  below), then Milestone 3 step 5.
 
 - **Side-quest — double buffering: COMPLETE, validated on real
   hardware.** `render.c`/`render.h` rewritten for true double buffering
@@ -181,6 +210,15 @@ later.
 
   Milestone 3 sub-steps (collision, entities, etc.) are now unblocked.
 
+- **Side-quest — movement granularity & square tiles: COMPLETE,
+  validated on real hardware.** See "Movement Granularity & Square
+  Tiles — Validated on Hardware" section below for full technical
+  findings. Player position decoupled from the tile grid (pixel-based
+  movement), tile footprint changed from rectangular to square via a 2x
+  horizontal glyph stretch, and confirmed the current libxenon build has
+  no 1080p video mode available. `dungeon.c/h` required zero changes —
+  platform-abstraction boundary held again.
+
 - **Side-quest — sprite rendering: PLANNED, not yet started.** See
   "Sprite Rendering — Planned Upgrade" section below for full scope
   assessment. Comparable in size to the double-buffering work — the
@@ -194,7 +232,10 @@ later.
   or input primitives beyond what already exists — just new screen
   states in `main.c`'s loop. Pause menu's "Quit" action will call
   `xenon_smc_power_reboot()` — see "System Power Control — SMC Findings"
-  below.
+  below. Expected home for seed random/manual entry (Design point 6) —
+  see Milestone 3 step 4 above; `dungeon_init(seed)` already supports
+  this with no `dungeon.c` changes needed once this side-quest is
+  picked up.
 
 ## Known Gotchas (accumulated)
 
@@ -222,6 +263,14 @@ later.
   the wrong directory mounts the wrong folder as `/app` and none of the
   project folders (`game/`, `hello/`, etc.) will be visible inside the
   container.
+- Don't guess repo-relative paths for grep targets (e.g. assuming
+  `libxenon/libxenon/include/xenos/` or `libxenon/libxenon/lib/` exist)
+  — this repo's actual layout doesn't match some other libxenon forks'
+  conventions. Use `find libxenon -iname "<name>*.h"` first to locate
+  the real path, then grep it. Same applies to toolchain-provided
+  headers (e.g. newlib's `stdlib.h`), which live inside the Docker
+  image at `/usr/local/xenon/xenon/include/`, not in the local
+  `libxenon/` repo clone at all.
 
 ## Double Buffering — Validated on Hardware
 
@@ -317,6 +366,54 @@ the original primary address. This means debug `printf()` output may lag
 a frame or get overwritten depending on which buffer is currently
 on-screen vs. being drawn to. Not a problem for game rendering (which
 bypasses `console_putch()` entirely), only cosmetic for debug text.
+
+## Movement Granularity & Square Tiles — Validated on Hardware
+
+Investigated after noticing two side effects of the fixed 8x16 glyph
+font: (1) grid cells were visibly rectangular (taller than wide), and
+(2) one d-pad press moved a large fraction of a room's width, making
+movement feel coarse. Root cause for both: `render_draw_tile()` was
+hardcoded to the native 8x16 pixel footprint, and player position was
+stored as tile-grid indices, welding movement step size to glyph size.
+
+**Fix — decoupled player position from the tile grid:** `entity_t`'s
+x/y are now raw pixel coordinates, not tile indices. Collision converts
+pixel position to a tile index (`px / tile_pitch`) only at the point of
+checking `dungeon_get_tile()`. `render.c` gained
+`render_draw_glyph_px()` (raw pixel position, no grid-snapping) for
+drawing the player, alongside the existing grid-snapped
+`render_draw_tile()` used by `dungeon_render()`. `render_get_tile_pitch_px()`
+exposes the fixed tile size so `main.c` doesn't hardcode it.
+
+**Fix — square tile footprint:** `buf_draw_glyph()` in `render.c` now
+writes each source font column twice (nearest-neighbor 2x horizontal
+stretch), turning the native 8x16 glyph into a 16x16 square on screen.
+This visibly distorts glyph shapes — accepted tradeoff, since ASCII
+glyphs are already a placeholder pending future sprite work (see
+"Sprite Rendering — Planned Upgrade" below), and correcting proportions
+matters more than glyph fidelity right now.
+
+**Movement step size:** `MOVE_STEP_PX` in `main.c` (currently 1) controls
+pixels moved per input-poll register. Confirmed on hardware: player
+moves and collision behaves correctly at this granularity. Note:
+`input.c` is edge-triggered (one press = one step, no held-repeat) — at
+small step values this requires many individual taps to cross a room.
+This is a known follow-on, not a bug — held-repeat d-pad input (and
+analog stick support) is the next planned input.c/h change, to make
+small-step movement actually usable via holding rather than repeated
+tapping.
+
+**Screen resolution note:** investigated whether 1080p output is
+available, since both the dev display and (likely) the console support
+it. Confirmed NOT possible with this libxenon build:
+`xenos_videomodes.h`'s `VIDEO_MODE_*` enum tops out at
+`VIDEO_MODE_HDMI_720P` (1280x720) and a few non-widescreen VGA modes up
+to 1440x900 — no 1080p mode exists in the table at all, so
+`VIDEO_MODE_AUTO` selecting 720p is already the best available real
+HDMI mode this SDK supports. Likely a limitation of this particular
+libxenon fork rather than the actual GPU hardware; not worth chasing
+further, out of scope for this project. Don't re-investigate this
+without cause.
 
 ## Sprite Rendering — Planned Upgrade
 
@@ -418,8 +515,6 @@ option.
 - Whether to eventually build the toolchain natively on Ubuntu (faster
   edit/compile loop, no Docker overhead) instead of the current
   Docker-based approach. Not a blocker — current setup works fine.
-- Tile-type representation for dungeon.c (e.g. plain enum vs a struct
-  per tile) — to be decided when starting Milestone 3 step 1.
 - Debug printf lag/overwrite issue from buffer-swapping not tracked by
   console_fb (see "Known rough edge" under Double Buffering above) —
   cosmetic, not urgent.
@@ -431,3 +526,6 @@ option.
 - Whether a settings menu is actually needed for V1, or if main menu +
   pause menu (with Quit -> reboot) covers it — to be decided when the
   menu side-quest is picked up.
+- Held-repeat timing/threshold for d-pad input, and analog stick
+  deadzone/sensitivity — to be decided when the input.c/h rework is
+  drafted.
