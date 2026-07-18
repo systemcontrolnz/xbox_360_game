@@ -187,9 +187,14 @@ later.
      indefinitely per the design decisions above, once the floor itself
      is solid.
 
-  Recommended starting point when resuming: held-repeat d-pad input +
-  left analog stick support (see "Movement Granularity & Square Tiles"
-  below), then Milestone 3 step 5.
+  Recommended starting point when resuming: Milestone 3 step 5
+  (monsters, simple AI, combat, XP/leveling) — input and collision are
+  now both solid (see "Held Input & Continuous Movement" and the
+  bounding-box collision fix below). Camera/scrolling (see "Scrolling
+  Camera — Scoped, Not Yet Implemented" below) is a reasonable
+  alternative next step if dungeon size grows before step 5 is tackled,
+  but isn't blocking anything today since the current map still fits
+  entirely on screen.
 
 - **Side-quest — double buffering: COMPLETE, validated on real
   hardware.** `render.c`/`render.h` rewritten for true double buffering
@@ -218,6 +223,17 @@ later.
   horizontal glyph stretch, and confirmed the current libxenon build has
   no 1080p video mode available. `dungeon.c/h` required zero changes —
   platform-abstraction boundary held again.
+
+- **Side-quest — held-repeat input, analog stick, and bounding-box
+  collision: COMPLETE, validated on real hardware.** See "Held Input &
+  Continuous Movement" section below for full technical findings.
+  `input.c` reworked to report level-triggered (held) d-pad state and
+  normalized left-stick position; `main.c` combines both into a single
+  movement direction scaled by `entity_t.move_speed` (new field, see
+  below). A pre-existing single-point collision check was also found and
+  fixed (bounding-box corners now checked, not just top-left position),
+  surfaced by this same testing pass. `dungeon.c/h` and `render.c/h`
+  required zero changes — platform-abstraction boundary held again.
 
 - **Side-quest — sprite rendering: PLANNED, not yet started.** See
   "Sprite Rendering — Planned Upgrade" section below for full scope
@@ -263,6 +279,12 @@ later.
   the wrong directory mounts the wrong folder as `/app` and none of the
   project folders (`game/`, `hello/`, etc.) will be visible inside the
   container.
+- Xbox 360 wired controllers appear to only send USB HID reports on
+  state change, not continuously — `get_controller_data()` only returns
+  fresh data when a new report has landed. Caching the last known state
+  in `input.c` (rather than treating "no new report" as "nothing held")
+  is required for correct continuous held-input behavior. See "Held
+  Input & Continuous Movement" section below for the full investigation.
 - Don't guess repo-relative paths for grep targets (e.g. assuming
   `libxenon/libxenon/include/xenos/` or `libxenon/libxenon/lib/` exist)
   — this repo's actual layout doesn't match some other libxenon forks'
@@ -415,6 +437,123 @@ libxenon fork rather than the actual GPU hardware; not worth chasing
 further, out of scope for this project. Don't re-investigate this
 without cause.
 
+## Held Input & Continuous Movement — Validated on Hardware
+
+Investigated after noticing that holding the d-pad still only produced
+one step per physical press, even after `input.c` was rewritten to
+report state directly (`out->up = cur.up`, no `prev` comparison) rather
+than edge-triggered. The analog stick, tested at the same time, behaved
+correctly (continuous) from the start.
+
+**Root cause, confirmed via driver inspection (not guessed):**
+`get_controller_data()` (`libxenon/libxenon/drivers/input/input.h`/`.c`)
+only returns fresh data (`valid=1`) when a NEW USB report has arrived —
+each successful read immediately clears the flag. Traced the actual
+report parsing to `usbctrl_ireq_callback()` in
+`libxenon/libxenon/drivers/usb/usbctrl.c` (line ~395 calls
+`set_controller_data()`); the parsing itself has no debounce logic, so
+the gap is upstream, at the controller hardware/USB level. Xbox 360
+wired controllers appear to only send a new HID report when
+button/stick state actually CHANGES, not on a fixed polling interval —
+a held-but-unchanging d-pad button simply produces no new USB traffic
+after the initial press. Confirmed once fixed and tested on real
+hardware: this exactly explains the symptom (stick jitter/movement kept
+generating "changed" reports and masking the same underlying gap that
+silently broke the digital d-pad).
+
+**Fix:** `input.c` now caches the last known full `controller_data_s` in
+a static `current` struct, only overwriting it when
+`get_controller_data()` actually returns fresh data, and reports from
+`current` unconditionally every poll — rather than reporting all-zero
+whenever no new USB report happened to land that frame. A genuine
+button release still arrives as its own new report and correctly clears
+the held state; nothing about that behavior changed. confirm/cancel
+(A/B) remain edge-triggered via separate `prev_a`/`prev_b` statics, same
+as before — this fix only affects the continuous movement-direction
+fields.
+
+**Analog stick — also fixed as part of this pass:**
+- Confirmed via grep (`libxenon/libxenon/drivers/input/input.h`,
+  `struct controller_data_s`): `s1_x`/`s1_y` are `signed short`
+  (-32768..32767), matching the assumed HID convention — no correction
+  needed there.
+- Y-axis inversion: this controller's left stick reports "up" as a
+  positive raw value, opposite of the d-pad-up convention (d-pad up
+  decreases `y`). Fixed by negating the normalized Y value in
+  `input.c`. Worth re-checking if a different physical controller is
+  ever tested, in case this is controller-specific rather than a
+  general Xbox 360 pad convention.
+- This machine's controller has a known hardware fault specifically in
+  the LEFT analog stick (drift/jitter), making thorough left-stick
+  testing unreliable until the on-order replacement controller arrives.
+  The RIGHT stick (`s2_x`/`s2_y`, unused so far) is confirmed good on
+  this same controller if a clean analog signal is needed for testing
+  before the replacement arrives.
+- 15% deadzone applied in `normalize_stick_axis()` — not yet tuned
+  against real gameplay feel, just a reasonable starting value.
+
+**`entity_t` gained a `move_speed` field** (`entities.h`) as part of
+this work, per the design goal that movement speed should be tunable by
+XP, powerups, or character selection later. `input.c` deliberately has
+NO concept of speed — it only reports raw direction/magnitude;
+`main.c` multiplies the combined input direction by
+`player.move_speed` each frame. This means future speed modifiers only
+ever need to touch `entity_t.move_speed` — `input.c` and the
+direction-combining code in `main.c` stay untouched. Default
+`move_speed` is a placeholder constant (`DEFAULT_MOVE_SPEED` in
+`entities.c`), not tuned.
+
+**Bounding-box collision fix (found via this same testing pass, not a
+new regression from held-input specifically):** `render_draw_glyph_px()`
+draws the player's glyph with `(player.x, player.y)` as its top-left
+corner, extending 16px right and 16px down from there — but collision
+was only checking that single top-left point against the tile grid.
+This let the glyph's trailing (bottom/right) edge visually overlap into
+wall tiles near the map's bottom and right borders (top/left borders
+happened to look correct, since the leading edge hits first). This was
+a latent bug from the earlier pixel-decoupling change, just much easier
+to notice/walk into once continuous held-movement made border-hugging
+trivial. Fixed in `main.c`: collision now checks all four corners of
+the player's 16x16 footprint at the candidate position, not just one
+point. Corner-only checking is sufficient for the current axis-aligned,
+tile-sized-obstacle case — worth revisiting if non-tile-aligned or
+smaller obstacles are ever introduced, since a thin obstruction between
+corners could theoretically be missed by a corners-only check.
+
+Confirmed on real hardware (see session photos): held d-pad now
+produces smooth continuous movement in all four directions, analog
+stick direction is correct (up is up), and the player can no longer
+visually overlap into wall tiles on any border, including corners.
+
+## Scrolling Camera — Scoped, Not Yet Implemented
+
+Raised when discussing what happens once dungeon size exceeds what fits
+on screen (at the current 16x16 tile pitch, 1280x720 gives room for
+~80x46 tiles; the dungeon is currently only 40x20, so this isn't an
+active problem yet, just a forward-looking design question).
+
+**Decision: centered-player scrolling camera, not chunk-loading.**
+Chunk-streaming (loading new map sections at screen edges) mainly solves
+*memory* problems for worlds too large to hold in RAM at once — not a
+real constraint here, since even a much larger dungeon is a tiny 2D
+array. A scrolling camera is less engineering, and fits the existing
+long-term design better (Design point 5's post-V1 Metroidvania idea
+implies one coherent connected map, not segmented chunk-screens).
+
+**Where it should live:** `render.c`, not `dungeon.c` or `main.c` — a
+new `render_set_camera(int cam_x_px, int cam_y_px)`, called once per
+frame before drawing, offsetting all subsequent
+`render_draw_tile()`/`render_draw_glyph_px()` calls internally.
+`dungeon.c` and `main.c` keep working in world-pixel coordinates
+unchanged; only screen-space conversion moves into render.c, keeping
+the platform-abstraction boundary intact. `main.c` would compute camera
+position each frame (centered on player, clamped so the camera never
+shows past the map's edges).
+
+Not yet implemented — deferred until dungeon size actually grows past
+screen capacity, or until picked up deliberately as its own focused
+change.
+
 ## Sprite Rendering — Planned Upgrade
 
 Idea: move from ASCII/glyph rendering to actual 2D sprite images (static
@@ -526,6 +665,12 @@ option.
 - Whether a settings menu is actually needed for V1, or if main menu +
   pause menu (with Quit -> reboot) covers it — to be decided when the
   menu side-quest is picked up.
-- Held-repeat timing/threshold for d-pad input, and analog stick
-  deadzone/sensitivity — to be decided when the input.c/h rework is
-  drafted.
+- Analog stick deadzone (currently 15%, untuned) and whether stick
+  magnitude should affect movement speed (currently direction-only,
+  full and light pushes move identically) — to be tuned once felt out
+  in real gameplay, and once the left stick's hardware fault is no
+  longer a testing confound (replacement controller on order).
+- Scrolling camera (see "Scrolling Camera — Scoped, Not Yet
+  Implemented" above) — scoped but not implemented; pick up once
+  dungeon size grows past screen capacity or as its own focused
+  side-quest.
